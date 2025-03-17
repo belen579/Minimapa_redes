@@ -1,0 +1,86 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    container_name: backend
+    depends_on:
+      - mongo
+    environment:
+      - MONGO_URI=mongodb://root:secret@mongo:27017/devices?authSource=admin
+    ports:
+      - "8000:8000"
+    networks:
+      - mynetwork
+    mem_limit: 3g
+    restart: always
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: frontend
+    volumes:
+      - ./frontend:/var/www/html
+    ports:
+      - "8080:80"
+    depends_on:
+      - mongo
+      - php-fpm
+    networks:
+      - mynetwork
+    restart: always
+
+  php-fpm:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.php
+    container_name: php-fpm
+    volumes:
+      - ./frontend:/var/www/html
+    environment:
+      - MONGO_URI=mongodb://root:secret@mongo:27017/devices?authSource=admin
+      - API_URL=http://192.168.200.102:8000/
+    networks:
+      - mynetwork
+    mem_limit: 3g
+    restart: always
+
+  mongo:
+    image: mongo:latest
+    restart: unless-stopped
+    container_name: mongo
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: 'root'
+      MONGO_INITDB_ROOT_PASSWORD: 'secret'
+      MONGO_INITDB_DATABASE: 'devices'
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+      - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - mynetwork
+    command: ["mongod"]
+
+  nmap-scanner:
+    build: /home/vboxuser/proyecto_redes/nmap-scanner
+    container_name: nmap-scanner
+    restart: always
+    depends_on:
+      - mongo
+    privileged: true
+    network_mode: "host"
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+    - MONGO_URI=mongodb://root:secret@localhost:27017/devices?authSource=admin
+
+volumes:
+  mongo_data:
+    driver: local
+
+networks:
+  mynetwork:
+    driver: bridge

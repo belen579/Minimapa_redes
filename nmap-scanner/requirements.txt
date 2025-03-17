@@ -1,0 +1,8 @@
+fastapi[standard]==0.112.0
+uvicorn==0.27.1
+python-nmap==0.7.1
+pymongo==4.6.2
+pydantic==2.6.2
+paramiko==3.3.1
+
+
