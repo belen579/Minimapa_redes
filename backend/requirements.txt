@@ -3,3 +3,9 @@ uvicorn==0.27.1
 python-nmap==0.7.1
 pymongo==4.6.2
 pydantic==2.6.2
+paramiko==3.1.0
+python-multipart==0.0.7
+pywinrm==0.4.3
+pypsrp==0.8.1
+requests-kerberos==0.14.0
+requests-ntlm==1.2.0

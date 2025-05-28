@@ -1,15 +1,12 @@
 import nmap
-import subprocess
-import paramiko
 from pymongo import MongoClient
-from datetime import datetime
-import os
+from datetime import datetime, timezone, timedelta
 import time
-from fastapi import FastAPI, APIRouter, HTTPException
-from typing import List, Optional
-from pydantic import BaseModel
+from fastapi import FastAPI, APIRouter
+from typing import Optional
 import uvicorn
 import logging
+import sys
 from bson import ObjectId
 
 # Configurar logging para mejor depuración
@@ -23,17 +20,32 @@ app = FastAPI()
 router = APIRouter()
 app.include_router(router)
 
-# Modelo para comandos por IP
-class CommandRequest(BaseModel):
-    command: str
-    fecha_scan: Optional[str] = None
-    method: str = "ssh"
-    user: str = "minimapa"
-    password: str = "ri6d4kRob3gZyH2"
+def get_madrid_timezone():
+    # Verificar si estamos en horario de verano
+    is_dst = time.localtime().tm_isdst > 0
+    madrid_offset = 2 if is_dst else 1  # 2 horas en verano, 1 en invierno
+    return timezone(timedelta(hours=madrid_offset))
+
+# Función para obtener datetime con zona horaria de Madrid
+def get_madrid_time():
+    return datetime.now(get_madrid_timezone())
+
+
+
+
+try:
+        from comandocontroller import router as comando_router
+        logger.info("Importando módulo de comandos Windows")
+        app.include_router(comando_router)
+        logger.info("Router de comandos Windows añadido correctamente")
+except Exception as cmd_error:
+        logger.error(f"Error al importar controlador de comandos: {cmd_error}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 class NetworkScanner:
     def __init__(self):
-        # Como estamos en network_mode: "host", usamos localhost
+        # Conexión a MongoDB
         self.MONGO_URI = 'mongodb://root:secret@localhost:27017/devices?authSource=admin'
         
         # Intentar conectar con reintentos
@@ -50,7 +62,6 @@ class NetworkScanner:
                 self.aulas_collection = self.db['aulas']
                 self.network_db = self.client['network_scan']
                 self.devices_collection = self.network_db['devices']
-                self.commands_collection = self.network_db['commands_history']
                 break
                 
             except Exception as e:
@@ -102,7 +113,9 @@ class NetworkScanner:
             self.nm.scan(hosts=ip_range, arguments=arguments)
             
             network_data = []
-            scan_date = datetime.now()
+            fecha_actual = datetime.now()+ timedelta(hours=2)
+           
+            
             
             for host in self.nm.all_hosts():
                 if self.nm[host].state() == "up":
@@ -117,9 +130,8 @@ class NetworkScanner:
                         'mac': mac,
                         'status': self.nm[host].state(),
                         'aula': aula_nombre,
-                        'scan_date': scan_date,
-                        'timestamp': scan_date.timestamp(),
-                        'date_str': scan_date.strftime('%Y-%m-%d')
+                        'scan_date': fecha_actual,
+                        'date_str': fecha_actual
                     }
                     
                     network_data.append(device_data)
@@ -165,7 +177,7 @@ class NetworkScanner:
                 resumen = {
                     "total_dispositivos": len(all_devices),
                     "dispositivos_por_aula": resultados_por_aula,
-                    "fecha_escaneo": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    "fecha_escaneo": time.strftime('%Y-%m-%d %H:%M:%S')
                 }
                 logger.info("\n=== Resumen del escaneo ===")
                 logger.info(f"Total de dispositivos: {len(all_devices)}")
@@ -183,227 +195,41 @@ class NetworkScanner:
             return False, str(e), []
         finally:
             logger.info("\n=== Escaneo finalizado ===")
-            
-    def execute_command_ssh(self, ip, command, user, password):
-        """Ejecuta un comando a través de SSH en un dispositivo remoto"""
-        try:
-            client = paramiko.SSHClient()
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            client.connect(ip, username=user, password=password, timeout=10)
-            
-            stdin, stdout, stderr = client.exec_command(command)
-            output = stdout.read().decode('utf-8')
-            error = stderr.read().decode('utf-8')
-            
-            client.close()
-            
-            return {
-                'success': True,
-                'output': output,
-                'error': error if error else None
-            }
-        except Exception as e:
-            return {
-                'success': False,
-                'output': '',
-                'error': str(e)
-            }
-    
-    def execute_command_nmap(self, ip, command):
-        """Ejecuta un comando nmap en un dispositivo específico"""
-        try:
-            full_command = f"nmap {command} {ip}"
-            result = subprocess.run(full_command, shell=True, capture_output=True, text=True)
-            
-            return {
-                'success': result.returncode == 0,
-                'output': result.stdout,
-                'error': result.stderr if result.stderr else None
-            }
-        except Exception as e:
-            return {
-                'success': False,
-                'output': '',
-                'error': str(e)
-            }
-    
-    def execute_command(self, ip, command, method="ssh", user="minimapa", password="ri6d4kRob3gZyH2"):
-        """Ejecuta un comando en un dispositivo específico"""
-        try:
-            # Ejecutar según el método
-            if method == "ssh":
-                result = self.execute_command_ssh(ip, command, user, password)
-            else:
-                result = self.execute_command_nmap(ip, command)
-            
-            # Registrar el comando
-            self.commands_collection.insert_one({
-                'ip': ip,
-                'command': command,
-                'method': method,
-                'timestamp': datetime.now(),
-                'success': result['success'],
-                'output': result['output'],
-                'error': result['error']
-            })
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error ejecutando comando en {ip}: {e}")
-            return {
-                'success': False,
-                'output': '',
-                'error': str(e)
-            }
-    
-    def execute_command_in_aula_by_id(self, aula_id, command, fecha_scan=None, method="ssh", user="minimapa", password="ri6d4kRob3gZyH2"):
-        """
-        Ejecuta un comando en todos los dispositivos de un aula específica identificada por su ID
-        
-        Parámetros:
-        - aula_id: ID del aula donde ejecutar los comandos
-        - command: Comando a ejecutar
-        - fecha_scan: Fecha específica de escaneo (formato YYYY-MM-DD), si es None usa el más reciente
-        - method: Método de ejecución (ssh o nmap)
-        - user: Usuario para SSH
-        - password: Contraseña para SSH
-        """
-        try:
-            logger.info(f"\n=== Iniciando ejecución de comando en aula con ID {aula_id} ===")
-            
-            # Primero, obtener el nombre del aula a partir del ID
-            aula = self.aulas_collection.find_one({"_id": ObjectId(aula_id)})
-            
-            if not aula:
-                logger.warning(f"⚠ No se encontró un aula con el ID {aula_id}")
-                return False, f"No se encontró un aula con el ID {aula_id}", []
-            
-            aula_nombre = aula.get("nombre_aula", "Sin nombre")
-            logger.info(f"✓ Aula encontrada: {aula_nombre}")
-            
-            # Construir el pipeline para buscar dispositivos
-            pipeline = [{"$match": {"aula": aula_nombre}}]
-            
-            # Si se especifica una fecha, filtrar por esa fecha
-            if fecha_scan:
-                try:
-                    # Convertir a datetime para validar el formato
-                    fecha_scan_dt = datetime.strptime(fecha_scan, "%Y-%m-%d")
-                    
-                    # Crear un filtro para la fecha específica
-                    pipeline.append({
-                        "$match": {
-                            "date_str": fecha_scan
-                        }
-                    })
-                    logger.info(f"Filtrando dispositivos escaneados el {fecha_scan}")
-                except ValueError:
-                    logger.warning(f"⚠ Formato de fecha incorrecto: {fecha_scan}. Utilizando el escaneo más reciente.")
-                    fecha_scan = None
-            
-            # Si no hay fecha específica, agrupar por IP y tomar el más reciente
-            if not fecha_scan:
-                pipeline.extend([
-                    {"$sort": {"scan_date": -1}},
-                    {"$group": {"_id": "$ip", "doc": {"$first": "$$ROOT"}}},
-                    {"$replaceRoot": {"newRoot": "$doc"}}
-                ])
-                logger.info("Utilizando los dispositivos del escaneo más reciente")
-            
-            devices = list(self.devices_collection.aggregate(pipeline))
-            
-            if not devices:
-                message = f"No se encontraron dispositivos escaneados para el aula {aula_nombre}"
-                if fecha_scan:
-                    message += f" en la fecha {fecha_scan}"
-                logger.warning(f"⚠ {message}")
-                return False, message, []
-            
-            logger.info(f"✓ Se encontraron {len(devices)} dispositivos para el aula {aula_nombre}")
-            
-            # Ejecutar el comando en cada dispositivo
-            results = []
-            successful = 0
-            
-            for device in devices:
-                ip = device['ip']
-                try:
-                    result = self.execute_command(
-                        ip=ip,
-                        command=command,
-                        method=method,
-                        user=user,
-                        password=password
-                    )
-                    
-                    if result['success']:
-                        successful += 1
-                        status = "✓"
-                    else:
-                        status = "✗"
-                    
-                    logger.info(f"  {status} Comando en {ip}: {result['success']}")
-                    
-                    results.append({
-                        "ip": ip,
-                        "hostname": device.get("hostname", ""),
-                        "success": result['success'],
-                        "output": result['output'],
-                        "error": result['error']
-                    })
-                    
-                except Exception as e:
-                    logger.error(f"  ✗ Error al ejecutar comando en {ip}: {e}")
-                    results.append({
-                        "ip": ip,
-                        "hostname": device.get("hostname", ""),
-                        "success": False,
-                        "output": "",
-                        "error": str(e)
-                    })
-            
-            logger.info(f"\n=== Resumen de ejecución ===")
-            logger.info(f"Aula: {aula_nombre} (ID: {aula_id})")
-            if fecha_scan:
-                logger.info(f"Fecha: {fecha_scan}")
-            logger.info(f"Comando: {command}")
-            logger.info(f"Método: {method}")
-            logger.info(f"Dispositivos: {len(devices)}")
-            logger.info(f"Éxitos: {successful}/{len(devices)} ({int(successful/len(devices)*100 if len(devices) > 0 else 0)}%)")
-            
-            return True, f"Comando ejecutado en {successful} de {len(devices)} dispositivos", results
-            
-        except Exception as e:
-            logger.error(f"❌ Error al ejecutar comando en aula: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return False, str(e), []
 
-
-def main():
+def run_cron_scan():
+    """Función dedicada para ejecutar el escaneo desde cron"""
     try:
+        logger.info("\n🕒 CRON: Iniciando escaneo automático a las " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        
         scanner = NetworkScanner()
-        success, result, _ = scanner.run_scan()
+        success, result, devices = scanner.run_scan()
+        
         if success:
-            logger.info("\n✓ Proceso completado exitosamente")
+            logger.info("\n✅ CRON: Escaneo automático completado exitosamente")
             if isinstance(result, dict):
-                logger.info("\nResumen final:")
+                logger.info("\nResumen del escaneo automático:")
                 logger.info(f"Total dispositivos: {result['total_dispositivos']}")
                 logger.info("Dispositivos por aula:")
                 for aula, cantidad in result['dispositivos_por_aula'].items():
                     logger.info(f"  - {aula}: {cantidad}")
                 logger.info(f"Fecha: {result['fecha_escaneo']}")
         else:
-            logger.error(f"\n❌ Error: {result}")
+            logger.error(f"\n❌ CRON: Error en escaneo automático: {result}")
+            
     except Exception as e:
-        logger.error(f"\n❌ Error crítico: {e}")
+        logger.error(f"\n❌ CRON: Error crítico en escaneo automático: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        sys.exit(1)
+    
+    logger.info("\n🏁 CRON: Finalizando escaneo automático")
+    return True
 
 @app.post("/ejecutar-scan/")
 async def ejecutar_scan():
     try:
         # Registrar inicio con timestamp
-        logger.info(f"[{datetime.now()}] Iniciando proceso de escaneo...")
+        logger.info(f"[{datetime.now()}] API: Iniciando proceso de escaneo...")
         
         # Verificar que MongoDB esté disponible
         try:
@@ -550,119 +376,42 @@ async def ejecutar_scan():
             "data": None
         }
 
-@app.post("/ejecutar-comando-aula-id/{aula_id}")
-async def ejecutar_comando_aula_by_id(
-    aula_id: str,
-    request: CommandRequest
-):
-    """
-    Ejecuta un comando en todos los dispositivos de un aula específica identificada por su ID
-    con un manejo de errores más detallado y registro de resultados.
-    """
-    try:
-        # Validaciones iniciales
-        if not aula_id:
-            return {
-                "status": "error",
-                "message": "ID de aula no proporcionado",
-                "data": None
-            }
-        
-        if not request.command:
-            return {
-                "status": "error", 
-                "message": "Comando no especificado",
-                "data": None
-            }
+# Punto de entrada principal
 
-        # Instanciar el escáner de red
-        scanner = NetworkScanner()
 
-        # Ejecutar comando en dispositivos del aula
-        success, message, results = scanner.execute_command_in_aula_by_id(
-            aula_id=aula_id,
-            command=request.command,
-            fecha_scan=request.fecha_scan,
-            method=request.method,
-            user=request.user,
-            password=request.password
-        )
-
-        # Procesamiento de resultados detallado
-        if success:
-            dispositivos_exitosos = sum(1 for r in results if r.get("success", False))
-            dispositivos_fallidos = len(results) - dispositivos_exitosos
-
-            response_data = {
-                "status": "success",
-                "data": {
-                    "aula_id": aula_id,
-                    "command": request.command,
-                    "method": request.method,
-                    "total_dispositivos": len(results),
-                    "dispositivos_exitosos": dispositivos_exitosos,
-                    "dispositivos_fallidos": dispositivos_fallidos,
-                    "resultados_detallados": results,
-                    "porcentaje_exito": round((dispositivos_exitosos / len(results)) * 100, 2) if results else 0
-                },
-                "message": message or f"Comando ejecutado en {dispositivos_exitosos} de {len(results)} dispositivos"
-            }
-
-            # Agregar fecha si se proporcionó
-            if request.fecha_scan:
-                response_data["data"]["fecha_scan"] = request.fecha_scan
-
-            # Logging de resultados detallados
-            for resultado in results:
-                if not resultado.get("success", False):
-                    logger.warning(f"Fallo en dispositivo {resultado.get('ip', 'Desconocido')}: {resultado.get('error', 'Error no especificado')}")
-
-            return response_data
-        else:
-            # Manejo de error global
-            return {
-                "status": "error",
-                "message": message or "Fallo en la ejecución del comando",
-                "data": {
-                    "aula_id": aula_id,
-                    "command": request.command,
-                    "method": request.method
-                }
-            }
-
-    except Exception as e:
-        # Captura de excepciones no controladas
-        logger.error(f"Excepción en ejecución de comando: {str(e)}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return {
-            "status": "error",
-            "message": f"Error crítico durante la ejecución del comando: {str(e)}",
-            "data": None
-        }
-
-# Si se ejecuta directamente, iniciar el servidor en el puerto 8001
 if __name__ == "__main__":
-    # Asegurarse de que las colecciones existan
-    try:
-        scanner = NetworkScanner()
-        # Crear colecciones si no existen
-        if "aulas" not in scanner.db.list_collection_names():
-            logger.info("Creando colección 'aulas'")
-            scanner.db.create_collection("aulas")
+   
+
+   
+    # Detectar si estamos siendo ejecutados desde cron (con argumento --cron) o como servidor
+    if len(sys.argv) > 1 and sys.argv[1] == "--cron":
+        logger.info("Ejecutando en modo CRON")
+        run_cron_scan()
+        sys.exit(0)
+    else:
+        # Asegurarse de que las colecciones existan antes de iniciar el servidor
+        try:
+            scanner = NetworkScanner()
+            # Crear colecciones si no existen
+            if "aulas" not in scanner.db.list_collection_names():
+                logger.info("Creando colección 'aulas'")
+                scanner.db.create_collection("aulas")
+                
+            if "devices" not in scanner.network_db.list_collection_names():
+                logger.info("Creando colección 'devices'")
+                scanner.network_db.create_collection("devices")
+
+
+
+           
+                
+            logger.info("Iniciando servidor uvicorn en modo API")
+        except Exception as e:
+            logger.error(f"Error inicializando colecciones: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+
             
-        if "devices" not in scanner.network_db.list_collection_names():
-            logger.info("Creando colección 'devices'")
-            scanner.network_db.create_collection("devices")
-            
-        if "commands_history" not in scanner.network_db.list_collection_names():
-            logger.info("Creando colección 'commands_history'")
-            scanner.network_db.create_collection("commands_history")
-            
-        logger.info("Iniciando servidor uvicorn")
-    except Exception as e:
-        logger.error(f"Error inicializando colecciones: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-    
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+        
+        uvicorn.run(app, host="0.0.0.0", port=8001)

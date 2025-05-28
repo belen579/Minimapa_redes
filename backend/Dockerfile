@@ -9,8 +9,9 @@ COPY requirements.txt .
 
 # Instalar dependencias en una sola capa para reducir el tamaño de la imagen
 RUN apt-get update && \
-    apt-get install -y nmap cron && \
+    apt-get install -y nmap cron build-essential gcc python3-dev libssl-dev libffi-dev libkrb5-dev && \
     pip install --no-cache-dir -r requirements.txt && \
+    pip install paramiko==3.1.0 && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

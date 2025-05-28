@@ -2,12 +2,24 @@
 from fastapi import FastAPI
 from pymongo import MongoClient
 from controllers import aulacontroller, equipocontroller, rosetacontroller, switchcontroller
+import logging
+import os
+from datetime import datetime
 
 
 
 
 # Crear la instancia de FastAPI
 app = FastAPI()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("api.log"),
+        logging.StreamHandler()
+    ]
+)
 
 # Configuración de la conexión a MongoDB
 MONGO_URI = "mongodb://root:secret@mongo:27017/"
